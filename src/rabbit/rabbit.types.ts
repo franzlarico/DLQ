@@ -30,6 +30,7 @@ export interface RequeueResult {
   sourceQueue: string;
   targetExchange: string;
   targetRoutingKey?: string;
+  targetRoutingKeys: string[];
   requested: number;
   requeued: number;
   stoppedBecauseQueueWasEmpty: boolean;
@@ -50,7 +51,42 @@ export interface InspectedMessage {
   properties: MessagePropertiesView;
   death?: RabbitDeathHeader[];
   inferredOriginalRoutingKeys: string[];
+  metadata: MessageMetadataView;
   inspectedAt: string;
+}
+
+export interface MessageMetadataView {
+  sourceQueue: string;
+  inspectedAt: string;
+  body: {
+    encoding: InspectedMessage['bodyEncoding'];
+    sizeBytes: number;
+    contentType?: string;
+    contentEncoding?: string;
+  };
+  delivery: {
+    deliveryTag: number;
+    redelivered: boolean;
+    exchange: string;
+    routingKey: string;
+  };
+  dlq: {
+    deathCount: number;
+    latestReason?: string;
+    latestQueue?: string;
+    latestExchange?: string;
+    latestTime?: string;
+    latestRoutingKeys: string[];
+    firstDeathQueue?: string;
+    firstDeathExchange?: string;
+    firstDeathReason?: string;
+    lastDeathQueue?: string;
+    lastDeathExchange?: string;
+    lastDeathReason?: string;
+  };
+  properties: MessagePropertiesView;
+  headers: Record<string, unknown>;
+  rawDeath: RabbitDeathHeader[];
 }
 
 export interface MessagePropertiesView {

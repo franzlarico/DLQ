@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { BadRequestException, Injectable, OnModuleDestroy, ServiceUnavailableException } from '@nestjs/common';
 import { connect, type ChannelModel, type ConfirmChannel, type GetMessage } from 'amqplib';
 import {
@@ -14,7 +15,7 @@ import {
 @Injectable()
 export class RabbitService implements OnModuleDestroy {
   private connection?: ChannelModel;
-  private channel?: ConfirmChannel;
+  private channel?: ChannelModel;
   private readonly config: RabbitConfig = {
     url: process.env.RABBITMQ_URL ?? 'amqp://guest:guest@localhost:5672',
     prefetch: Number(process.env.RABBITMQ_PREFETCH ?? 10),
@@ -51,7 +52,7 @@ export class RabbitService implements OnModuleDestroy {
         }
 
         pendingMessages.push(message);
-        messages.push(this.toInspectedMessage(message));
+        messages.push(this.toInspectedMessage(message, queue));
       }
     } finally {
       pendingMessages.forEach((message) => channel.nack(message, false, true));
@@ -61,43 +62,71 @@ export class RabbitService implements OnModuleDestroy {
   }
 
   async requeueMessages(options: RequeueOptions): Promise<RequeueResult> {
-    const channel = await this.getChannel();
+    // Crear una conexión NEW para requeue (no reutilizar canal)
+    let tempConnection;
+    let tempChannel;
     const messages: InspectedMessage[] = [];
+    const targetRoutingKeys: string[] = [];
     let stoppedBecauseQueueWasEmpty = false;
 
-    for (let index = 0; index < options.limit; index += 1) {
-      const message = await channel.get(options.sourceQueue, { noAck: false });
-      if (!message) {
-        stoppedBecauseQueueWasEmpty = true;
-        break;
-      }
+    try {
+      // Conexión temporal
+      tempConnection = await connect(this.config.url);
+      tempChannel = await tempConnection.createChannel();
 
-      const inspected = this.toInspectedMessage(message);
-      const publishOptions = this.buildPublishOptions(message, inspected);
+      for (let index = 0; index < options.limit; index += 1) {
+        // Obtener mensaje del canal normal
+        const channel = await this.getChannel();
+        const message = await channel.get(options.sourceQueue, { noAck: false });
+        
+        if (!message) {
+          stoppedBecauseQueueWasEmpty = true;
+          break;
+        }
 
-      try {
-        const targetRoutingKey = this.resolveTargetRoutingKey(options.targetRoutingKey, inspected);
+        const inspected = this.toInspectedMessage(message, options.sourceQueue);
+        const publishOptions = this.buildPublishOptions(message, inspected);
 
-        await this.publishAndWaitForConfirm(
-          channel,
+        // Resolver routing key
+        let targetRoutingKey = options.targetRoutingKey?.trim();
+        if (!targetRoutingKey) {
+          targetRoutingKey = inspected.inferredOriginalRoutingKeys[0];
+        }
+        
+        if (!targetRoutingKey) {
+          channel.nack(message, false, true);
+          throw new BadRequestException(
+            'Se requiere targetRoutingKey porque el mensaje no tiene metadatos x-death',
+          );
+        }
+
+        targetRoutingKeys.push(targetRoutingKey);
+
+        // Publicar usando canal temporal
+        tempChannel.publish(
           options.targetExchange,
           targetRoutingKey,
           message.content,
           publishOptions,
         );
-      } catch (error) {
-        channel.nack(message, false, true);
-        throw error;
-      }
 
-      channel.ack(message);
-      messages.push(inspected);
+        // Confirmar que fue sacado de la DLQ
+        channel.ack(message);
+        messages.push(inspected);
+      }
+    } catch (error) {
+      throw error;
+    } finally {
+      // Cerrar conexión temporal
+      await tempChannel?.close().catch(() => undefined);
+      await tempConnection?.close().catch(() => undefined);
     }
 
     return {
       sourceQueue: options.sourceQueue,
       targetExchange: options.targetExchange,
-      targetRoutingKey: options.targetRoutingKey,
+      targetRoutingKey: options.targetRoutingKey ?? targetRoutingKeys[0],
+      targetRoutingKeys,
       requested: options.limit,
       requeued: messages.length,
       stoppedBecauseQueueWasEmpty,
@@ -109,14 +138,14 @@ export class RabbitService implements OnModuleDestroy {
     return { ...this.config };
   }
 
-  private async getChannel(): Promise<ConfirmChannel> {
+  private async getChannel(): Promise<ChannelModel> {
     if (this.channel) {
       return this.channel;
     }
 
     try {
       const connection = await connect(this.config.url);
-      const channel = await connection.createConfirmChannel();
+      const channel = await connection.createChannel();
       await channel.prefetch(this.config.prefetch);
 
       connection.on('close', () => {
@@ -144,30 +173,12 @@ export class RabbitService implements OnModuleDestroy {
   private async close(): Promise<void> {
     const channel = this.channel;
     const connection = this.connection;
+    
     this.channel = undefined;
     this.connection = undefined;
 
     await channel?.close().catch(() => undefined);
     await connection?.close().catch(() => undefined);
-  }
-
-  private publishAndWaitForConfirm(
-    channel: ConfirmChannel,
-    exchange: string,
-    routingKey: string,
-    content: Buffer,
-    options: PublishOptions,
-  ): Promise<void> {
-    return new Promise((resolve, reject) => {
-      channel.publish(exchange, routingKey, content, options, (error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-
-        resolve();
-      });
-    });
   }
 
   private buildPublishOptions(message: GetMessage, inspected: InspectedMessage): PublishOptions {
@@ -182,26 +193,16 @@ export class RabbitService implements OnModuleDestroy {
     };
   }
 
-  private resolveTargetRoutingKey(configuredRoutingKey: string | undefined, inspected: InspectedMessage): string {
-    const routingKey = configuredRoutingKey ?? inspected.inferredOriginalRoutingKeys[0];
-
-    if (!routingKey) {
-      throw new BadRequestException(
-        'targetRoutingKey is required because the message does not include x-death routing-keys metadata',
-      );
-    }
-
-    return routingKey;
-  }
-
-  private toInspectedMessage(message: GetMessage): InspectedMessage {
+  private toInspectedMessage(message: GetMessage, sourceQueue: string): InspectedMessage {
     const properties = this.toPropertiesView(message.properties);
     const death = this.parseDeathHeaders(properties.headers?.['x-death']);
+    const bodyEncoding = this.getBodyEncoding(message.content, properties.contentType);
+    const inspectedAt = new Date().toISOString();
 
     return {
       id: properties.messageId ?? `${message.fields.deliveryTag}`,
       body: this.parseBody(message.content, properties.contentType),
-      bodyEncoding: this.getBodyEncoding(message.content, properties.contentType),
+      bodyEncoding,
       sizeBytes: message.content.length,
       fields: {
         deliveryTag: message.fields.deliveryTag,
@@ -212,7 +213,54 @@ export class RabbitService implements OnModuleDestroy {
       properties,
       death,
       inferredOriginalRoutingKeys: this.inferOriginalRoutingKeys(death),
-      inspectedAt: new Date().toISOString(),
+      metadata: this.buildMetadata(sourceQueue, message, properties, death, bodyEncoding, inspectedAt),
+      inspectedAt,
+    };
+  }
+
+  private buildMetadata(
+    sourceQueue: string,
+    message: GetMessage,
+    properties: MessagePropertiesView,
+    death: RabbitDeathHeader[] | undefined,
+    bodyEncoding: InspectedMessage['bodyEncoding'],
+    inspectedAt: string,
+  ): InspectedMessage['metadata'] {
+    const headers = properties.headers ?? {};
+    const latestDeath = death?.[0];
+
+    return {
+      sourceQueue,
+      inspectedAt,
+      body: {
+        encoding: bodyEncoding,
+        sizeBytes: message.content.length,
+        contentType: properties.contentType,
+        contentEncoding: properties.contentEncoding,
+      },
+      delivery: {
+        deliveryTag: message.fields.deliveryTag,
+        redelivered: message.fields.redelivered,
+        exchange: message.fields.exchange,
+        routingKey: message.fields.routingKey,
+      },
+      dlq: {
+        deathCount: death?.reduce((total, entry) => total + (entry.count ?? 0), 0) ?? 0,
+        latestReason: latestDeath?.reason,
+        latestQueue: latestDeath?.queue,
+        latestExchange: latestDeath?.exchange,
+        latestTime: latestDeath?.time,
+        latestRoutingKeys: latestDeath?.['routing-keys'] ?? [],
+        firstDeathQueue: this.headerString(headers['x-first-death-queue']),
+        firstDeathExchange: this.headerString(headers['x-first-death-exchange']),
+        firstDeathReason: this.headerString(headers['x-first-death-reason']),
+        lastDeathQueue: this.headerString(headers['x-last-death-queue']),
+        lastDeathExchange: this.headerString(headers['x-last-death-exchange']),
+        lastDeathReason: this.headerString(headers['x-last-death-reason']),
+      },
+      properties,
+      headers,
+      rawDeath: death ?? [],
     };
   }
 
@@ -320,6 +368,10 @@ export class RabbitService implements OnModuleDestroy {
     }
 
     return undefined;
+  }
+
+  private headerString(value: unknown): string | undefined {
+    return typeof value === 'string' && value.length > 0 ? value : undefined;
   }
 
   private inferOriginalRoutingKeys(death?: RabbitDeathHeader[]): string[] {

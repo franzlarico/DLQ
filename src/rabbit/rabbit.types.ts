@@ -2,6 +2,7 @@ import type { Options } from 'amqplib';
 
 export interface RabbitConfig {
   url: string;
+  managementUrl?: string;
   prefetch: number;
   defaultDlq?: string;
   defaultRequeueExchange?: string;
@@ -12,6 +13,12 @@ export interface QueueInfo {
   queue: string;
   messageCount: number;
   consumerCount: number;
+}
+
+export interface QueueListItem {
+  name: string;
+  messageCount: number;
+  isDlq: boolean;
 }
 
 export interface InspectOptions {
@@ -50,6 +57,7 @@ export interface InspectedMessage {
   };
   properties: MessagePropertiesView;
   death?: RabbitDeathHeader[];
+  inferredOriginalExchange?: string;
   inferredOriginalRoutingKeys: string[];
   metadata: MessageMetadataView;
   inspectedAt: string;

@@ -1,6 +1,6 @@
 const amqp = require('amqplib');
 
-const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://admin:admin@localhost:5672';
+const RABBITMQ_URL = process.env.RABBITMQ_URLE || 'amqp://user:password@localhost:5672';
 const DLQ = 'app.dlq';
 const DLQ_EXCHANGE = 'dlx.exchange';
 
@@ -8,8 +8,8 @@ async function setupRabbitMQ() {
   let connection;
   let channel;
   try {
-    console.log('🔗 Conectando a RabbitMQ:', RABBITMQ_URL);
-    connection = await amqp.connect(RABBITMQ_URL);
+    console.log('🔗 Conectando a RabbitMQ:', RABBITMQ_AMQ);
+    connection = await amqp.connect(RABBITMQ_AMQ);
     channel = await connection.createChannel();
     
     console.log('\n📦 Creando DLX y DLQ...');

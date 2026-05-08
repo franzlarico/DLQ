@@ -1,11 +1,21 @@
 # Rabbit DLQ Console API
 
-Backend NestJS para inspeccionar mensajes de una DLQ de RabbitMQ, ver metadata y reencolarlos desde una API HTTP.
+Backend NestJS para inspeccion, requeue y observabilidad operativa de DLQ en RabbitMQ.
+
+## Lo nuevo en este MVP
+
+- Persistencia de auditoria y KPIs con PostgreSQL o fallback `sqljs`
+- Worker continuo para capturar snapshots y muestrear DLQ activas
+- Dashboard API para summary, queues, exceptions y activity
+- Jobs de requeue auditados
+- Health checks de API, Rabbit AMQP, Rabbit Management y base de datos
+- Swagger en `/docs`
 
 ## Requisitos
 
 - Node.js 20+
-- RabbitMQ accesible por AMQP
+- RabbitMQ accesible por AMQP y Management
+- PostgreSQL recomendado para historico real
 
 ## Instalacion
 
@@ -15,39 +25,60 @@ cp .env.example .env
 npm run start:dev
 ```
 
-Opcional para levantar RabbitMQ local:
+Si no configuras `DATABASE_URL`, el backend usa `sqljs` persistido en archivo para no bloquear el arranque local.
 
-```bash
-docker compose up -d
+## Variables importantes
+
+```env
+PORT=3001
+RABBITMQ_URL=amqp://admin:admin@localhost:5672
+RABBITMQ_MANAGEMENT_URL=http://localhost:15672
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/dlq_console
+DLQ_COLLECTOR_INTERVAL_MS=30000
+DLQ_COLLECTOR_INSPECT_LIMIT=5
 ```
 
-Panel RabbitMQ local: <http://localhost:15672> con `guest / guest`.
-
-## Endpoints
+## Endpoints principales
 
 ```http
 GET /health
+GET /docs
+
+GET /rabbit/config
+GET /rabbit/queues
 GET /rabbit/queues/:queue
 GET /rabbit/queues/:queue/messages?limit=10
 POST /rabbit/queues/:queue/requeue
+
+GET /dashboard/summary?window=24h
+GET /dashboard/queues?window=24h
+GET /dashboard/exceptions?window=24h
+GET /dashboard/activity?window=24h&limit=12
+GET /dashboard/export?window=24h&format=csv
+
+POST /requeue/jobs
+GET /requeue/jobs/:id
 ```
 
-Ejemplo para inspeccionar metadata sin consumir definitivamente:
+## Requeue auditado
 
-```bash
-curl "http://localhost:3000/rabbit/queues/example.dlq/messages?limit=5"
-```
+`POST /requeue/jobs` crea un job persistido, ejecuta el requeue y guarda:
 
-Ejemplo para reencolar:
+- cola origen
+- destino inferido o manual
+- cantidad solicitada y real
+- duracion
+- items reencolados
 
-```bash
-curl -X POST "http://localhost:3000/rabbit/queues/example.dlq/requeue" \
-  -H "Content-Type: application/json" \
-  -d "{\"limit\":5,\"targetRoutingKey\":\"example.queue\"}"
-```
-
-Si `targetRoutingKey` no se envia, la API intenta usar el primer routing key del header `x-death`.
+Los headers de DLQ como `x-death` y `x-first/last-death-*` se limpian antes de republicar.
 
 ## Nota importante
 
-RabbitMQ via AMQP no tiene un "peek" real de mensajes. Para inspeccionar, la API hace `basic.get`, transforma el mensaje a JSON de lectura y luego hace `nack` con `requeue=true`, de modo que el mensaje queda nuevamente en la cola. Esto puede cambiar su posicion relativa en la cola.
+RabbitMQ via AMQP no tiene un "peek" real de mensajes. Para inspeccionar, la API hace `basic.get`, transforma el mensaje y luego `nack` con `requeue=true`, por lo que el mensaje vuelve a la cola y puede cambiar de posicion relativa.
+
+## Tests
+
+```bash
+npm test -- --runInBand
+npm run build
+```

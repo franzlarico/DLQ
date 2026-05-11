@@ -9,25 +9,12 @@ export class RabbitController {
   constructor(
     private readonly rabbitService: RabbitService,
     private readonly requeueJobService: RequeueJobService,
-  ) {}
+  ) { }
 
   @Get('config')
-  getConfig(): Omit<RabbitConfig, 'url' | 'managementUrl'> & {
-    urlConfigured: boolean;
-    managementUrlConfigured: boolean;
-  } {
-    const defaults = this.rabbitService.getDefaults();
-
-    return {
-      urlConfigured: Boolean(defaults.url),
-      managementUrlConfigured: Boolean(defaults.managementUrl),
-      prefetch: defaults.prefetch,
-      defaultDlq: defaults.defaultDlq,
-      defaultRequeueExchange: defaults.defaultRequeueExchange,
-      defaultRequeueRoutingKey: defaults.defaultRequeueRoutingKey,
-    };
+  getConfig(): RabbitConfig {
+    return this.rabbitService.getDefaults();
   }
-
   @Get('queues')
   listQueues(): Promise<QueueListItem[]> {
     return this.rabbitService.listQueues();

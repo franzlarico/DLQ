@@ -1,8 +1,14 @@
 import type { Options } from 'amqplib';
 
+/**
+ * =========================
+ * PUBLIC DTOs (FRONT + API)
+ * =========================
+ */
+
 export interface RabbitConfig {
-  url: string;
-  managementUrl?: string;
+  urlConfigured: boolean;
+  managementUrlConfigured: boolean;
   prefetch: number;
   defaultDlq?: string;
   defaultRequeueExchange?: string;
@@ -29,14 +35,13 @@ export interface InspectOptions {
 export interface RequeueOptions {
   sourceQueue: string;
   limit: number;
-  targetExchange: string;
+  targetExchange?: string;
   targetRoutingKey?: string;
 }
 
 export interface RequeueResult {
   sourceQueue: string;
   targetExchange: string;
-  targetRoutingKey?: string;
   targetRoutingKeys: string[];
   requested: number;
   requeued: number;
@@ -49,51 +54,66 @@ export interface InspectedMessage {
   body: unknown;
   bodyEncoding: 'json' | 'utf8' | 'base64' | 'empty';
   sizeBytes: number;
+
   fields: {
     deliveryTag: number;
     redelivered: boolean;
     exchange: string;
     routingKey: string;
   };
+
   properties: MessagePropertiesView;
+
   death?: RabbitDeathHeader[];
+
   inferredOriginalExchange?: string;
   inferredOriginalRoutingKeys: string[];
+
   metadata: MessageMetadataView;
+
   inspectedAt: string;
 }
 
 export interface MessageMetadataView {
   sourceQueue: string;
   inspectedAt: string;
+
   body: {
     encoding: InspectedMessage['bodyEncoding'];
     sizeBytes: number;
     contentType?: string;
     contentEncoding?: string;
   };
+
   delivery: {
     deliveryTag: number;
     redelivered: boolean;
     exchange: string;
     routingKey: string;
   };
+
   dlq: {
     deathCount: number;
+
     latestReason?: string;
     latestQueue?: string;
     latestExchange?: string;
     latestTime?: string;
     latestRoutingKeys: string[];
+
     firstDeathQueue?: string;
     firstDeathExchange?: string;
     firstDeathReason?: string;
+
     lastDeathQueue?: string;
     lastDeathExchange?: string;
     lastDeathReason?: string;
   };
+
   properties: MessagePropertiesView;
+
   headers: Record<string, unknown>;
+
   rawDeath: RabbitDeathHeader[];
 }
 
@@ -121,6 +141,60 @@ export interface RabbitDeathHeader {
   time?: string;
   exchange?: string;
   'routing-keys'?: string[];
+}
+
+export interface RequeueJobDetails {
+  id: string;
+  sourceQueue: string;
+
+  targetExchange?: string;
+  targetRoutingKey?: string;
+
+  requestedCount: number;
+  requeuedCount: number;
+
+  status: string;
+  requestedBy: string;
+
+  errorMessage?: string;
+
+  startedAt: string;
+  finishedAt?: string;
+  durationMs?: number;
+
+  targetRoutingKeys: string[];
+
+  items: Array<{
+    id: string;
+    fingerprint?: string;
+    messageId?: string;
+    routingKey?: string;
+    status: string;
+    createdAt: string;
+  }>;
+}
+
+/**
+ * =========================
+ * INTERNAL BACKEND TYPES
+ * =========================
+ */
+
+export interface RabbitInternalConfig {
+  url: string;
+  managementUrl?: string;
+  prefetch: number;
+  defaultDlq?: string;
+  defaultRequeueExchange?: string;
+  defaultRequeueRoutingKey?: string;
+}
+export interface RabbitInternalConfig {
+  url: string;
+  managementUrl?: string;
+  prefetch: number;
+  defaultDlq?: string;
+  defaultRequeueExchange?: string;
+  defaultRequeueRoutingKey?: string;
 }
 
 export type PublishOptions = Options.Publish;

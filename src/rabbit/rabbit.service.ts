@@ -18,6 +18,7 @@ import {
   type QueueInfo,
   type QueueListItem,
   type RabbitConfig,
+  type RabbitInternalConfig,
   type RabbitDeathHeader,
   type RequeueOptions,
   type RequeueResult,
@@ -39,7 +40,7 @@ export class RabbitService implements OnModuleDestroy {
   private connection?: ChannelModel;
   private channel?: Channel;
   private readonly logger = new Logger(RabbitService.name);
-  private readonly config: RabbitConfig = {
+  private readonly config: RabbitInternalConfig = {
     url: readOptionalEnv(process.env.RABBITMQ_AMQ) ?? 'amqp://user:password@localhost:5672',
     managementUrl: readOptionalEnv(process.env.RABBITMQ_MANAGEMENT_URL),
     prefetch: Number(process.env.RABBITMQ_PREFETCH ?? 10),
@@ -47,7 +48,7 @@ export class RabbitService implements OnModuleDestroy {
     defaultRequeueExchange: readOptionalEnv(process.env.RABBITMQ_DEFAULT_REQUEUE_EXCHANGE) ?? '',
     defaultRequeueRoutingKey: readOptionalEnv(process.env.RABBITMQ_DEFAULT_REQUEUE_ROUTING_KEY),
   };
-  
+
   constructor(private readonly auditService: AuditService) {
     console.log(this.config);
   }
@@ -167,7 +168,7 @@ export class RabbitService implements OnModuleDestroy {
         inspected: messages.length,
         stoppedBecauseQueueWasEmpty: messages.length < limit,
       });
-
+      messages.reverse();
       return messages;
     } catch (error) {
       this.resetChannelState();
@@ -483,7 +484,14 @@ export class RabbitService implements OnModuleDestroy {
   }
 
   getDefaults(): RabbitConfig {
-    return { ...this.config };
+    return {
+      urlConfigured: Boolean(this.config.url),
+      managementUrlConfigured: Boolean(this.config.managementUrl),
+      prefetch: this.config.prefetch,
+      defaultDlq: this.config.defaultDlq,
+      defaultRequeueExchange: this.config.defaultRequeueExchange,
+      defaultRequeueRoutingKey: this.config.defaultRequeueRoutingKey,
+    };
   }
 
   async checkAmqpHealth(): Promise<{ status: 'up' | 'down'; detail?: string }> {
@@ -650,7 +658,10 @@ export class RabbitService implements OnModuleDestroy {
       },
       properties,
       death,
-      inferredOriginalExchange: this.inferOriginalExchange(death),
+      inferredOriginalExchange: this.inferOriginalExchange(
+        death,
+        message.fields.exchange,
+      ),
       inferredOriginalRoutingKeys: this.inferOriginalRoutingKeys(death, sourceQueue),
       metadata: this.buildMetadata(sourceQueue, message, properties, death, bodyEncoding, inspectedAt),
       inspectedAt,
@@ -677,8 +688,29 @@ export class RabbitService implements OnModuleDestroy {
     return buildMessageFingerprint(message);
   }
 
-  private inferOriginalExchange(death?: RabbitDeathHeader[]): string | undefined {
-    return death?.[0]?.exchange;
+  private inferOriginalExchange(
+    death: RabbitDeathHeader[] | undefined,
+    currentExchange?: string,
+  ): string | undefined {
+    if (!death?.length) {
+      return currentExchange;
+    }
+
+    // Buscar exchange que NO sea retry/DLX
+    for (const entry of death) {
+      const exchange = entry.exchange;
+
+      if (
+        exchange &&
+        !exchange.includes('.dlx') &&
+        !exchange.includes('retry')
+      ) {
+        return exchange;
+      }
+    }
+
+    // fallback al exchange actual
+    return currentExchange;
   }
 
   private buildMetadata(
@@ -835,12 +867,34 @@ export class RabbitService implements OnModuleDestroy {
   }
 
   private normalizeHeaderTime(value: unknown): string | undefined {
+    if (!value) {
+      return undefined;
+    }
+
     if (value instanceof Date) {
       return value.toISOString();
     }
 
     if (typeof value === 'string') {
       return value;
+    }
+
+    // RabbitMQ timestamp numérico
+    if (typeof value === 'number') {
+      return new Date(value * 1000).toISOString();
+    }
+
+    // amqplib timestamp object
+    if (
+      typeof value === 'object' &&
+      value !== null &&
+      'value' in value
+    ) {
+      const timestamp = (value as { value?: unknown }).value;
+
+      if (typeof timestamp === 'number') {
+        return new Date(timestamp * 1000).toISOString();
+      }
     }
 
     return undefined;

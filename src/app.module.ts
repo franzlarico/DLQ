@@ -6,6 +6,8 @@ import { RabbitService } from './rabbit/rabbit.service';
 import { RequeueController } from './requeue/requeue.controller';
 import { RequeueJobService } from './requeue/requeue.service';
 import { AuditModule } from './audit/audit.module';
+import { NacosController } from './nacos/nacos.controller';
+import { NacosService } from './nacos/nacos.service';
 
 @Module({
   imports: [
@@ -14,7 +16,7 @@ import { AuditModule } from './audit/audit.module';
     ),
     AuditModule,
   ],
-  controllers: [RabbitController, RequeueController],
-  providers: [RabbitService, RequeueJobService],
+  controllers: [RabbitController, RequeueController, NacosController],
+  providers: [RabbitService, RequeueJobService, NacosService],
 })
 export class AppModule {}

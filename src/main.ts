@@ -7,7 +7,6 @@ import { parseLogLevels, sanitizeAmqpUrl } from './common/logging.utils';
 import { EnvConfiguration } from './common/config/nacos.config';
 
 async function bootstrap(): Promise<void> {
-  await EnvConfiguration();
 
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create(AppModule, {

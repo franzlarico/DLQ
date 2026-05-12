@@ -1,19 +1,35 @@
 import { Body, Controller, Get, Post } from '@nestjs/common';
 import { NacosService } from './nacos.service';
+import { RabbitService } from '../rabbit/rabbit.service';
 
 @Controller('nacos')
 export class NacosController {
-  constructor(private readonly nacosService: NacosService) {}
+  constructor(
+    private readonly nacosService: NacosService,
+    private readonly rabbitService: RabbitService,
+  ) {}
 
   @Post('reload')
-  reload(@Body() body: { namespace: string; env: string }) {
-    // Ejecutar la recarga de forma asíncrona y responder rápido
-    this.nacosService.reload(body.namespace, body.env).catch((err) => {
-      // El servicio ya registra el error; aquí se puede ampliar manejo si hace falta
-      // no throw para responder accepted inmediatamente
-    });
+  async reload(
+    @Body()
+    body: { namespace: string; env: string; vhost?: string },
+  ) {
+    // recargar nacos
+    await this.nacosService.reload(body.namespace, body.env);
 
-    return { status: 'accepted' };
+    // actualizar rabbit dinámicamente
+    await this.rabbitService.setConnectionConfig(
+      body.namespace,
+      body.env,
+      body.vhost,
+    );
+
+    return {
+      status: 'ok',
+      namespace: body.namespace,
+      env: body.env,
+      vhost: body.vhost ?? '/',
+    };
   }
 
   @Get('status')

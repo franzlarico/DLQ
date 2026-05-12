@@ -23,6 +23,7 @@ import {
   type RequeueOptions,
   type RequeueResult,
 } from './rabbit.types';
+import { NacosService } from '../nacos/nacos.service';
 
 function readOptionalEnv(value: string | undefined): string | undefined {
   const normalized = value?.trim();
@@ -37,21 +38,42 @@ function readOptionalEnv(value: string | undefined): string | undefined {
 
 @Injectable()
 export class RabbitService implements OnModuleDestroy {
+  constructor(
+    private readonly auditService: AuditService,
+    private readonly nacosService: NacosService
+  ) {
+    console.log(this.config);
+  }
+  async setConnectionConfig(namespace: string, env: string, vhost?: string): Promise<void> {
+    const rabbitConfig = await this.nacosService.getRabbitConfig(namespace, env, vhost);
+
+    // cerrar conexiones actuales
+    await this.close();
+
+    // actualizar config dinámica
+    this.config = {
+      ...this.config,
+      url: rabbitConfig.url,
+      managementUrl: rabbitConfig.managementUrl,
+    };
+
+    this.logger.log(
+      `Rabbit config updated -> ${rabbitConfig.url}`,
+    );
+  }
   private connection?: ChannelModel;
   private channel?: Channel;
   private readonly logger = new Logger(RabbitService.name);
-  private readonly config: RabbitInternalConfig = {
-    url: readOptionalEnv(process.env.RABBITMQ_AMQ) ?? 'amqp://user:password@localhost:5672',
-    managementUrl: readOptionalEnv(process.env.RABBITMQ_MANAGEMENT_URL),
-    prefetch: Number(process.env.RABBITMQ_PREFETCH ?? 10),
-    defaultDlq: readOptionalEnv(process.env.RABBITMQ_DEFAULT_DLQ),
-    defaultRequeueExchange: readOptionalEnv(process.env.RABBITMQ_DEFAULT_REQUEUE_EXCHANGE) ?? '',
-    defaultRequeueRoutingKey: readOptionalEnv(process.env.RABBITMQ_DEFAULT_REQUEUE_ROUTING_KEY),
+  private config: RabbitInternalConfig = {
+    url: 'amqp://user:password@localhost:5672',
+    managementUrl: undefined,
+    prefetch: 10,
+    defaultDlq: undefined,
+    defaultRequeueExchange: '',
+    defaultRequeueRoutingKey: undefined,
   };
 
-  constructor(private readonly auditService: AuditService) {
-    console.log(this.config);
-  }
+
 
   async onModuleDestroy(): Promise<void> {
     await this.close();
@@ -180,7 +202,17 @@ export class RabbitService implements OnModuleDestroy {
       });
       throw this.toHttpError(error, `Queue ${queue} could not be inspected`);
     } finally {
-      pendingMessages.forEach((message) => channel.nack(message, false, true));
+      for (const message of pendingMessages) {
+        try {
+          channel.nack(message, false, true);
+        } catch (nackError) {
+          this.writeLog('warn', 'rabbit.inspect.nack.failed', {
+            queue,
+            deliveryTag: message.fields.deliveryTag,
+            error: this.toErrorMetadata(nackError),
+          });
+        }
+      }
     }
   }
 
@@ -319,27 +351,35 @@ export class RabbitService implements OnModuleDestroy {
             messages.push(inspected);
 
             // Log successful requeue to audit
-            await this.auditService.log({
-              eventType: 'REQUEUE',
-              sourceQueue: options.sourceQueue,
-              targetExchange: effectiveTargetExchange,
-              targetRoutingKey,
-              messageId: inspected.id,
-              messageSize: message.content.length,
-              messageCount: 1,
-              successCount: 1,
-              status: 'SUCCESS',
-              duration: Date.now() - startTime,
-              arrivedAtDlqTime: new Date(inspected.metadata.dlq.latestTime || Date.now()),
-              // Complete message data
-              messageBody: inspected.body,
-              messageProperties: inspected.metadata.properties as Record<string, unknown>,
-              messageHeaders: inspected.metadata.headers as Record<string, unknown>,
-              dlqMetadata: inspected.metadata.dlq as Record<string, unknown>,
-              messageBodyEncoding: inspected.bodyEncoding,
-              originalExchange: inspected.inferredOriginalExchange,
-              originalRoutingKeys: inspected.inferredOriginalRoutingKeys,
-            });
+            try {
+              await this.auditService.log({
+                eventType: 'REQUEUE',
+                sourceQueue: options.sourceQueue,
+                targetExchange: effectiveTargetExchange,
+                targetRoutingKey,
+                messageId: inspected.id,
+                messageSize: message.content.length,
+                messageCount: 1,
+                successCount: 1,
+                status: 'SUCCESS',
+                duration: Date.now() - startTime,
+                arrivedAtDlqTime: new Date(inspected.metadata.dlq.latestTime || Date.now()),
+                // Complete message data
+                messageBody: inspected.body,
+                messageProperties: inspected.metadata.properties as Record<string, unknown>,
+                messageHeaders: inspected.metadata.headers as Record<string, unknown>,
+                dlqMetadata: inspected.metadata.dlq as Record<string, unknown>,
+                messageBodyEncoding: inspected.bodyEncoding,
+                originalExchange: inspected.inferredOriginalExchange,
+                originalRoutingKeys: inspected.inferredOriginalRoutingKeys,
+              });
+            } catch (auditError) {
+              this.writeLog('warn', 'rabbit.requeue.audit-log.failed', {
+                sourceQueue: options.sourceQueue,
+                messageId: inspected.id,
+                error: this.toErrorMetadata(auditError),
+              });
+            }
           } catch (publishError) {
             sourceChannel.nack(message, false, true);
             this.writeLog('error', 'rabbit.requeue.publish-failed', {
@@ -352,27 +392,35 @@ export class RabbitService implements OnModuleDestroy {
               error: this.toErrorMetadata(publishError),
             });
 
-            await this.auditService.log({
-              eventType: 'REQUEUE',
-              sourceQueue: options.sourceQueue,
-              targetExchange: effectiveTargetExchange,
-              targetRoutingKey,
-              messageId: inspected.id,
-              messageSize: message.content.length,
-              messageCount: 1,
-              successCount: 0,
-              status: 'FAILED',
-              errorMessage: publishError instanceof Error ? publishError.message : String(publishError),
-              arrivedAtDlqTime: new Date(inspected.metadata.dlq.latestTime || Date.now()),
-              // Complete message data (for failed operations too)
-              messageBody: inspected.body,
-              messageProperties: inspected.metadata.properties as Record<string, unknown>,
-              messageHeaders: inspected.metadata.headers as Record<string, unknown>,
-              dlqMetadata: inspected.metadata.dlq as Record<string, unknown>,
-              messageBodyEncoding: inspected.bodyEncoding,
-              originalExchange: inspected.inferredOriginalExchange,
-              originalRoutingKeys: inspected.inferredOriginalRoutingKeys,
-            });
+            try {
+              await this.auditService.log({
+                eventType: 'REQUEUE',
+                sourceQueue: options.sourceQueue,
+                targetExchange: effectiveTargetExchange,
+                targetRoutingKey,
+                messageId: inspected.id,
+                messageSize: message.content.length,
+                messageCount: 1,
+                successCount: 0,
+                status: 'FAILED',
+                errorMessage: publishError instanceof Error ? publishError.message : String(publishError),
+                arrivedAtDlqTime: new Date(inspected.metadata.dlq.latestTime || Date.now()),
+                // Complete message data (for failed operations too)
+                messageBody: inspected.body,
+                messageProperties: inspected.metadata.properties as Record<string, unknown>,
+                messageHeaders: inspected.metadata.headers as Record<string, unknown>,
+                dlqMetadata: inspected.metadata.dlq as Record<string, unknown>,
+                messageBodyEncoding: inspected.bodyEncoding,
+                originalExchange: inspected.inferredOriginalExchange,
+                originalRoutingKeys: inspected.inferredOriginalRoutingKeys,
+              });
+            } catch (auditError) {
+              this.writeLog('warn', 'rabbit.requeue.audit-log.failed', {
+                sourceQueue: options.sourceQueue,
+                messageId: inspected.id,
+                error: this.toErrorMetadata(auditError),
+              });
+            }
 
             throw publishError;
           }
@@ -406,17 +454,24 @@ export class RabbitService implements OnModuleDestroy {
 
         // Log failure to audit
         if (messages.length > 0) {
-          await this.auditService.log({
-            eventType: 'REQUEUE',
-            sourceQueue: options.sourceQueue,
-            targetExchange: effectiveTargetExchange,
-            targetRoutingKey: options.targetRoutingKey?.trim(),
-            messageCount: options.limit,
-            successCount: messages.length,
-            status: 'PARTIAL',
-            errorMessage: error instanceof Error ? error.message : String(error),
-            duration,
-          });
+          try {
+            await this.auditService.log({
+              eventType: 'REQUEUE',
+              sourceQueue: options.sourceQueue,
+              targetExchange: effectiveTargetExchange,
+              targetRoutingKey: options.targetRoutingKey?.trim(),
+              messageCount: options.limit,
+              successCount: messages.length,
+              status: 'PARTIAL',
+              errorMessage: error instanceof Error ? error.message : String(error),
+              duration,
+            });
+          } catch (auditError) {
+            this.writeLog('warn', 'rabbit.requeue.audit-log.failed', {
+              sourceQueue: options.sourceQueue,
+              error: this.toErrorMetadata(auditError),
+            });
+          }
         }
 
         throw new ServiceUnavailableException({
@@ -615,26 +670,28 @@ export class RabbitService implements OnModuleDestroy {
     });
   }
 
-  private buildPublishOptions(message: GetMessage, inspected: InspectedMessage): PublishOptions {
+  private buildPublishOptions(
+    message: GetMessage,
+    inspected: InspectedMessage,
+  ): PublishOptions {
     const headers = {
       ...(message.properties.headers ?? {}),
     } as Record<string, unknown>;
-
-    delete headers['x-death'];
-    delete headers['x-first-death-queue'];
-    delete headers['x-first-death-exchange'];
-    delete headers['x-first-death-reason'];
-    delete headers['x-last-death-queue'];
-    delete headers['x-last-death-exchange'];
-    delete headers['x-last-death-reason'];
 
     return {
       ...message.properties,
       headers: {
         ...headers,
+
         'x-requeued-from-dlq': inspected.fields.routingKey,
         'x-requeued-at': new Date().toISOString(),
+
+        // preserve first known DLQ arrival
+        'x-original-dlq-time':
+          headers['x-original-dlq-time']
+          ?? inspected.metadata.dlq.latestTime,
       },
+
       persistent: message.properties.deliveryMode === 2,
     };
   }

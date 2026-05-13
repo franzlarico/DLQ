@@ -40,10 +40,12 @@ export class AuditController {
 
   @Get('health')
   async getHealth() {
+    const database = await this.auditService.checkDatabaseHealth();
+
     return {
-      status: 'up',
+      status: database.status === 'up' ? 'up' : 'down',
       dependencies: {
-        database: { status: 'up' },
+        database,
         rabbitAmqp: { status: 'up' },
         rabbitManagement: { status: 'up' },
       },

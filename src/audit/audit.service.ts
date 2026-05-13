@@ -61,6 +61,18 @@ export class AuditService {
     }
   }
 
+  async checkDatabaseHealth(): Promise<{ status: 'up' | 'down'; detail?: string }> {
+    try {
+      await this.auditLogModel.estimatedDocumentCount().exec();
+      return { status: 'up' };
+    } catch (error) {
+      return {
+        status: 'down',
+        detail: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
   async getRequeueHistory(
     sourceQueue: string,
     limit: number = 50,

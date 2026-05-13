@@ -42,7 +42,7 @@ export class RabbitService implements OnModuleDestroy {
     private readonly auditService: AuditService,
     private readonly nacosService: NacosService
   ) {
-    console.log(this.config);
+    this.logger.log('RabbitService initialized');
   }
   async setConnectionConfig(namespace: string, env: string, vhost?: string): Promise<void> {
     const rabbitConfig = await this.nacosService.getRabbitConfig(namespace, env, vhost);
@@ -293,7 +293,7 @@ export class RabbitService implements OnModuleDestroy {
             });
 
             await this.auditService.log({
-              eventType: 'REQUEUE',
+              eventType: 'REQUEUE_MESSAGE',
               sourceQueue: options.sourceQueue,
               messageId: inspected.id,
               messageSize: message.content.length,
@@ -353,7 +353,7 @@ export class RabbitService implements OnModuleDestroy {
             // Log successful requeue to audit
             try {
               await this.auditService.log({
-                eventType: 'REQUEUE',
+                eventType: 'REQUEUE_MESSAGE',
                 sourceQueue: options.sourceQueue,
                 targetExchange: effectiveTargetExchange,
                 targetRoutingKey,
@@ -394,7 +394,7 @@ export class RabbitService implements OnModuleDestroy {
 
             try {
               await this.auditService.log({
-                eventType: 'REQUEUE',
+                eventType: 'REQUEUE_MESSAGE',
                 sourceQueue: options.sourceQueue,
                 targetExchange: effectiveTargetExchange,
                 targetRoutingKey,
@@ -456,7 +456,7 @@ export class RabbitService implements OnModuleDestroy {
         if (messages.length > 0) {
           try {
             await this.auditService.log({
-              eventType: 'REQUEUE',
+              eventType: 'REQUEUE_MESSAGE',
               sourceQueue: options.sourceQueue,
               targetExchange: effectiveTargetExchange,
               targetRoutingKey: options.targetRoutingKey?.trim(),
@@ -525,7 +525,7 @@ export class RabbitService implements OnModuleDestroy {
 
     // Log overall operation
     await this.auditService.log({
-      eventType: 'REQUEUE',
+      eventType: 'REQUEUE_BATCH',
       sourceQueue: options.sourceQueue,
       targetExchange: effectiveTargetExchange,
       targetRoutingKey: options.targetRoutingKey?.trim() || targetRoutingKeys[0],

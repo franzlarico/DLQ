@@ -1,3 +1,4 @@
+import { initializeAPM, initializeElasticsearchTemplate, WinstonLoggerService } from '@crm4/logger';
 import 'dotenv/config';
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
@@ -7,11 +8,31 @@ import { parseLogLevels, sanitizeAmqpUrl } from './common/logging.utils';
 import { EnvConfiguration } from './common/config/nacos.config';
 
 async function bootstrap(): Promise<void> {
+  await EnvConfiguration();
 
-  const logger = new Logger('Bootstrap');
+  console.log(EnvConfiguration)
+  const apmAgent = initializeAPM({
+    serviceName: `colas-muertas`,
+    serverUrl: process.env.ELASTIC_APM_SERVER_URL,
+    environment: process.env.NODE_ENV,
+  });
+
+  if (apmAgent) {
+    console.log('APM Agent initialized successfully');
+  }
+
+  // 3. Elastic ANTES de Nest
+  await initializeElasticsearchTemplate({
+    serviceName: 'deadqueue.log',
+    elasticsearchUrl: process.env.ELASTICSEARCH_URL,
+    elasticUsername: process.env.ELASTIC_USERNAME,
+    elasticPassword: process.env.ELASTIC_PASSWORD,
+  });
+
   const app = await NestFactory.create(AppModule, {
     logger: parseLogLevels(process.env.LOG_LEVEL),
   });
+  const logger = app.get(WinstonLoggerService);
   const corsOrigin = process.env.CORS_ORIGIN ?? '*';
 
   app.enableShutdownHooks();
@@ -28,6 +49,7 @@ async function bootstrap(): Promise<void> {
 
   const port = Number(process.env.PORT ?? 3000);
   await app.listen(port);
+  logger.setElasticReady();
 
   logger.log(`backend listening on http://localhost:${port}`);
   logger.log(`swagger docs: http://localhost:${port}/docs`);

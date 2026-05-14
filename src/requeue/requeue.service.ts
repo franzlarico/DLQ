@@ -1,7 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { RequeueResult } from '../rabbit/rabbit.types';
 import { RabbitService } from '../rabbit/rabbit.service';
-import { AuditService } from '../audit/audit.service';
 
 export interface RequeueJobRequest {
   sourceQueue: string;
@@ -13,10 +12,7 @@ export interface RequeueJobRequest {
 
 @Injectable()
 export class RequeueJobService {
-  constructor(
-    private readonly rabbitService: RabbitService,
-    private readonly auditService: AuditService,
-  ) {}
+  constructor(private readonly rabbitService: RabbitService) {}
 
   async createJob(request: RequeueJobRequest): Promise<RequeueResult> {
     return this.rabbitService.requeueMessages({

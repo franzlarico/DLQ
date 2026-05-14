@@ -55,6 +55,7 @@ export class RabbitService implements OnModuleDestroy {
       ...this.config,
       url: rabbitConfig.url,
       managementUrl: rabbitConfig.managementUrl,
+      vhost: this.getVhostPath(rabbitConfig.url),
     };
 
     this.logger.log(
@@ -67,6 +68,7 @@ export class RabbitService implements OnModuleDestroy {
   private config: RabbitInternalConfig = {
     url: 'amqp://user:password@localhost:5672',
     managementUrl: undefined,
+    vhost: '/',
     prefetch: 10,
     defaultDlq: undefined,
     defaultRequeueExchange: '',
@@ -82,13 +84,15 @@ export class RabbitService implements OnModuleDestroy {
   async listQueues(): Promise<QueueListItem[]> {
     const managementUrl = this.getMgmtUrl();
     const credentials = this.getCredentials();
+    const vhost = this.config.vhost ?? this.getVhostPath(this.config.url);
 
     this.writeLog('debug', 'rabbit.listQueues.start', {
       managementUrl: sanitizeAmqpUrl(managementUrl),
+      vhost,
     });
 
     try {
-      const response = await globalThis.fetch(`${managementUrl}/api/queues`, {
+      const response = await globalThis.fetch(`${managementUrl}/api/queues/${encodeURIComponent(vhost)}`, {
         headers: {
           Authorization: `Basic ${Buffer.from(credentials).toString('base64')}`,
         },
@@ -123,6 +127,7 @@ export class RabbitService implements OnModuleDestroy {
       this.writeLog('debug', 'rabbit.listQueues.completed', {
         queueCount: normalizedQueues.length,
         queuesWithMessages: normalizedQueues.filter((queue) => queue.messageCount > 0).length,
+        vhost,
       });
 
       return normalizedQueues;
@@ -225,6 +230,7 @@ export class RabbitService implements OnModuleDestroy {
     let stoppedBecauseQueueWasEmpty = false;
     let effectiveTargetExchange = options.targetExchange?.trim() ?? '';
     const shouldInferTargetExchange = effectiveTargetExchange.length === 0;
+    let hadMessageErrors = false;
     const startTime = Date.now();
 
     this.writeLog('log', 'rabbit.requeue.start', {
@@ -283,6 +289,7 @@ export class RabbitService implements OnModuleDestroy {
 
           if (!targetRoutingKey) {
             sourceChannel.nack(message, false, true);
+            hadMessageErrors = true;
             this.writeLog('warn', 'rabbit.requeue.missing-target', {
               sourceQueue: options.sourceQueue,
               messageId: inspected.id,
@@ -304,9 +311,7 @@ export class RabbitService implements OnModuleDestroy {
               arrivedAtDlqTime: new Date(inspected.metadata.dlq.latestTime || Date.now()),
             });
 
-            throw new BadRequestException(
-              'Se requiere targetRoutingKey, o metadatos x-death, o un nombre de cola DLQ reconocible para inferirlo.',
-            );
+            continue;
           }
 
           const publishOptions = this.buildPublishOptions(message, inspected);
@@ -382,6 +387,7 @@ export class RabbitService implements OnModuleDestroy {
             }
           } catch (publishError) {
             sourceChannel.nack(message, false, true);
+            hadMessageErrors = true;
             this.writeLog('error', 'rabbit.requeue.publish-failed', {
               sourceQueue: options.sourceQueue,
               messageId: inspected.id,
@@ -422,7 +428,7 @@ export class RabbitService implements OnModuleDestroy {
               });
             }
 
-            throw publishError;
+            continue;
           }
         } catch (iterationError) {
           if (iterationError instanceof BadRequestException) {
@@ -497,6 +503,12 @@ export class RabbitService implements OnModuleDestroy {
         this.writeLog('warn', 'rabbit.requeue.temp-connection-close-error', {
           error: this.toErrorMetadata(err),
         });
+      });
+    }
+
+    if (messages.length === 0 && hadMessageErrors) {
+      throw new ServiceUnavailableException({
+        message: 'No se pudieron reencolar mensajes; revisa los registros para más detalles.',
       });
     }
 
@@ -1018,6 +1030,16 @@ export class RabbitService implements OnModuleDestroy {
     const user = url.username || 'guest';
     const pass = url.password || 'guest';
     return `${user}:${pass}`;
+  }
+
+  private getVhostPath(urlString: string): string {
+    const url = new URL(urlString);
+    const path = url.pathname || '/';
+    if (path === '' || path === '/') {
+      return '/';
+    }
+
+    return path.substring(1);
   }
 
   private isDlqQueue(queueName: string): boolean {

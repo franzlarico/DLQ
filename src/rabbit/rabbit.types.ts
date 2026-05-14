@@ -183,14 +183,7 @@ export interface RequeueJobDetails {
 export interface RabbitInternalConfig {
   url: string;
   managementUrl?: string;
-  prefetch: number;
-  defaultDlq?: string;
-  defaultRequeueExchange?: string;
-  defaultRequeueRoutingKey?: string;
-}
-export interface RabbitInternalConfig {
-  url: string;
-  managementUrl?: string;
+  vhost: string;
   prefetch: number;
   defaultDlq?: string;
   defaultRequeueExchange?: string;

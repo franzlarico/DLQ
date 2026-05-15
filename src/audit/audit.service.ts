@@ -1,5 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
+import { WinstonLoggerService } from '@crm4/logger';
 import { Model } from 'mongoose';
 import { AuditLog, AuditLogDocument } from './audit.schema';
 
@@ -18,6 +19,7 @@ export interface AuditLogCreateDto {
   duration?: number;
   arrivedAtDlqTime?: Date;
   status: 'SUCCESS' | 'PARTIAL' | 'FAILED';
+
   // Complete message data
   messageBody?: unknown;
   messageProperties?: Record<string, unknown>;
@@ -30,33 +32,55 @@ export interface AuditLogCreateDto {
 
 @Injectable()
 export class AuditService {
-  private readonly logger = new Logger(AuditService.name);
+  constructor(
+    @InjectModel(AuditLog.name)
+    private auditLogModel: Model<AuditLogDocument>,
 
-  constructor(@InjectModel(AuditLog.name) private auditLogModel: Model<AuditLogDocument>) {}
+    private readonly logger: WinstonLoggerService,
+  ) { }
 
   async log(data: AuditLogCreateDto): Promise<AuditLogDocument> {
     try {
       const auditLog = new this.auditLogModel(data);
       const saved = await auditLog.save();
-      
-      // Log summary only for successful operations
+
       if (data.status === 'SUCCESS') {
-        this.logger.log(
-          `[AUDIT] ${data.eventType} completed: ${data.sourceQueue} → ${data.targetExchange || 'N/A'} (${data.successCount}/${data.messageCount} msgs, ${data.duration}ms)`,
-        );
+        this.logger.logStructured('audit.success', {
+          eventType: data.eventType,
+          sourceQueue: data.sourceQueue,
+          targetExchange: data.targetExchange || 'N/A',
+          successCount: data.successCount,
+          messageCount: data.messageCount,
+          duration: data.duration,
+        });
       } else if (data.status === 'PARTIAL') {
-        this.logger.warn(
-          `[AUDIT] ${data.eventType} partial: ${data.sourceQueue} → ${data.targetExchange || 'N/A'} (${data.successCount}/${data.messageCount} msgs) - ${data.errorMessage}`,
-        );
+        this.logger.logStructured('audit.partial', {
+          eventType: data.eventType,
+          sourceQueue: data.sourceQueue,
+          targetExchange: data.targetExchange || 'N/A',
+          successCount: data.successCount,
+          messageCount: data.messageCount,
+          errorMessage: data.errorMessage,
+        });
       } else {
-        this.logger.error(
-          `[AUDIT] ${data.eventType} failed: ${data.sourceQueue} - ${data.errorMessage}`,
-        );
+        this.logger.logStructured('audit.failed', {
+          eventType: data.eventType,
+          sourceQueue: data.sourceQueue,
+          errorMessage: data.errorMessage,
+        });
       }
-      
+
       return saved;
     } catch (error) {
-      this.logger.error(`Failed to save audit log: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.logError(
+        error instanceof Error ? error : new Error(String(error)),
+        'AuditService.log',
+        {
+          eventType: data.eventType,
+          sourceQueue: data.sourceQueue,
+        },
+      );
+
       throw error;
     }
   }
@@ -64,8 +88,16 @@ export class AuditService {
   async checkDatabaseHealth(): Promise<{ status: 'up' | 'down'; detail?: string }> {
     try {
       await this.auditLogModel.estimatedDocumentCount().exec();
+
+      this.logger.debug('Database health check OK', 'AuditService');
+
       return { status: 'up' };
     } catch (error) {
+      this.logger.logError(
+        error instanceof Error ? error : new Error(String(error)),
+        'AuditService.checkDatabaseHealth',
+      );
+
       return {
         status: 'down',
         detail: error instanceof Error ? error.message : String(error),
@@ -78,6 +110,11 @@ export class AuditService {
     limit: number = 50,
     skip: number = 0,
   ): Promise<AuditLogDocument[]> {
+    this.logger.debug(
+      `Fetching requeue history for queue: ${sourceQueue}`,
+      'AuditService',
+    );
+
     return this.auditLogModel
       .find({
         eventType: 'REQUEUE',
@@ -97,6 +134,10 @@ export class AuditService {
     uniqueQueues: number;
     averageRequeueSize: number;
   }> {
+    this.logger.debug(
+      `Generating DLQ summary for window: ${window}`,
+      'AuditService',
+    );
     const now = new Date();
     let startDate = new Date();
 
@@ -141,6 +182,14 @@ export class AuditService {
     }
 
     const result = aggregation[0];
+
+    this.logger.logStructured('audit.dlq.summary.generated', {
+      window,
+      totalMessages: result.totalMessages || 0,
+      totalRequeued: result.totalRequeued || 0,
+      uniqueQueues: result.uniqueQueues?.length || 0,
+    });
+
     return {
       totalMessages: result.totalMessages || 0,
       totalRequeued: result.totalRequeued || 0,
@@ -149,7 +198,9 @@ export class AuditService {
     };
   }
 
-  async getQueueDistribution(window: '24h' | '7d' | '30d' | 'all' = '24h'): Promise<
+  async getQueueDistribution(
+    window: '24h' | '7d' | '30d' | 'all' = '24h',
+  ): Promise<
     Array<{
       queue: string;
       totalMessages: number;
@@ -157,6 +208,11 @@ export class AuditService {
       failedOperations: number;
     }>
   > {
+    this.logger.debug(
+      `Generating queue distribution for window: ${window}`,
+      'AuditService',
+    );
+
     const now = new Date();
     let startDate = new Date();
 
@@ -203,6 +259,11 @@ export class AuditService {
       { $sort: { totalMessages: -1 } },
     ]);
 
+    this.logger.logStructured('audit.queue.distribution.generated', {
+      window,
+      queues: aggregation.length,
+    });
+
     return aggregation;
   }
 
@@ -210,6 +271,11 @@ export class AuditService {
     window: '24h' | '7d' | '30d' | 'all' = '24h',
     limit: number = 20,
   ): Promise<AuditLogDocument[]> {
+    this.logger.debug(
+      `Fetching recent activity for window: ${window}`,
+      'AuditService',
+    );
+
     const now = new Date();
     let startDate = new Date();
 
@@ -236,12 +302,19 @@ export class AuditService {
       .exec();
   }
 
-  async getExceptionSummary(window: '24h' | '7d' | '30d' | 'all' = '24h'): Promise<
+  async getExceptionSummary(
+    window: '24h' | '7d' | '30d' | 'all' = '24h',
+  ): Promise<
     Array<{
       reason: string;
       count: number;
     }>
   > {
+    this.logger.debug(
+      `Generating exception summary for window: ${window}`,
+      'AuditService',
+    );
+
     const now = new Date();
     let startDate = new Date();
 
@@ -281,6 +354,11 @@ export class AuditService {
         },
       },
     ]);
+
+    this.logger.logStructured('audit.exception.summary.generated', {
+      window,
+      total: aggregation.length,
+    });
 
     return aggregation;
   }

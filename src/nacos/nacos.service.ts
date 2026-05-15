@@ -1,10 +1,13 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { WinstonLoggerService } from '@crm4/logger';
 
 @Injectable()
 export class NacosService {
+  constructor(
+    private readonly logger: WinstonLoggerService,
+  ) { }
   private reloaded = false;
   private lastReloadAt?: string;
-  private readonly logger = new Logger(NacosService.name);
 
   async reload(namespace: string, env: string): Promise<void> {
     this.reloaded = false;
@@ -13,16 +16,31 @@ export class NacosService {
       process.env.NACOS_NAMESPACE = namespace;
       process.env.NACOS_ENV = env;
 
-      this.logger.log(`Iniciando recarga Nacos namespace=${namespace} env=${env}`);
+      this.logger.logStructured('nacos.reload.started', {
+        namespace,
+        env,
+      });
 
       await new Promise((r) => setTimeout(r, 1000));
 
       this.reloaded = true;
       this.lastReloadAt = new Date().toISOString();
 
-      this.logger.log('Recarga Nacos completada');
+      this.logger.logStructured('nacos.reload.completed', {
+        namespace,
+        env,
+        reloadedAt: this.lastReloadAt,
+      });
     } catch (err) {
-      this.logger.error('Fallo recargando Nacos', err as Error);
+      this.logger.logError(
+        err instanceof Error ? err : new Error(String(err)),
+        'NacosService.reload',
+        {
+          namespace,
+          env,
+        },
+      );
+
       this.reloaded = false;
       throw err;
     }
@@ -30,9 +48,11 @@ export class NacosService {
 
   // 👇 AQUI
   async getRabbitConfig(namespace: string, env: string, vhost?: string) {
-    this.logger.log(
-      `Obteniendo config Rabbit namespace=${namespace} env=${env} vhost=${vhost ?? '/'} `,
-    );
+    this.logger.logStructured('nacos.rabbit-config.requested', {
+      namespace,
+      env,
+      vhost: vhost ?? '/',
+    });
 
     const buildUrl = (baseUrl: string, requestedVhost?: string) => {
       const url = new URL(baseUrl);

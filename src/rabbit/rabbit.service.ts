@@ -2,13 +2,12 @@ import 'dotenv/config';
 import {
   BadRequestException,
   Injectable,
-  Logger,
   NotFoundException,
   OnModuleDestroy,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { connect, type Channel, type ChannelModel, type ConfirmChannel, type GetMessage } from 'amqplib';
-import { formatLogMeta, sanitizeAmqpUrl } from '../common/logging.utils';
+import { sanitizeAmqpUrl } from '../common/logging.utils';
 import { buildMessageFingerprint } from './message-fingerprint.util';
 import { AuditService } from '../audit/audit.service';
 import {
@@ -24,6 +23,7 @@ import {
   type RequeueResult,
 } from './rabbit.types';
 import { NacosService } from '../nacos/nacos.service';
+import { WinstonLoggerService } from '@crm4/logger';
 
 function readOptionalEnv(value: string | undefined): string | undefined {
   const normalized = value?.trim();
@@ -39,6 +39,7 @@ function readOptionalEnv(value: string | undefined): string | undefined {
 @Injectable()
 export class RabbitService implements OnModuleDestroy {
   constructor(
+    private readonly logger: WinstonLoggerService,
     private readonly auditService: AuditService,
     private readonly nacosService: NacosService
   ) {
@@ -64,7 +65,6 @@ export class RabbitService implements OnModuleDestroy {
   }
   private connection?: ChannelModel;
   private channel?: Channel;
-  private readonly logger = new Logger(RabbitService.name);
   private config: RabbitInternalConfig = {
     url: 'amqp://user:password@localhost:5672',
     managementUrl: undefined,
@@ -1075,20 +1075,30 @@ export class RabbitService implements OnModuleDestroy {
     event: string,
     metadata: Record<string, unknown>,
   ): void {
-    const message = `${event} ${formatLogMeta(metadata)}`;
+    const payload = {
+      event,
+      ...metadata,
+    };
 
     switch (level) {
       case 'warn':
-        this.logger.warn(message);
+        this.logger.warn(payload, RabbitService.name);
         break;
+
       case 'error':
-        this.logger.error(message);
+        this.logger.error(
+          payload,
+          undefined,
+          RabbitService.name,
+        );
         break;
+
       case 'debug':
-        this.logger.debug(message);
+        this.logger.debug(payload, RabbitService.name);
         break;
+
       default:
-        this.logger.log(message);
+        this.logger.log(payload, RabbitService.name);
         break;
     }
   }

@@ -1,23 +1,25 @@
 # Rabbit DLQ Console API
 
-Backend NestJS para inspeccion, requeue y observabilidad operativa de DLQ en RabbitMQ.
+Backend NestJS para inspeccionar y reencolar mensajes en DLQ de RabbitMQ con auditoría y dashboards operativos.
 
-## Lo nuevo en este MVP
+## Qué incluye este proyecto
 
-- Persistencia de auditoria y KPIs con PostgreSQL o fallback `sqljs`
-- Worker continuo para capturar snapshots y muestrear DLQ activas
-- Dashboard API para summary, queues, exceptions y activity
-- Jobs de requeue auditados
-- Health checks de API, Rabbit AMQP, Rabbit Management y base de datos
-- Swagger en `/docs`
+- API para listar colas RabbitMQ y ver mensajes DLQ
+- Requeue seguro de mensajes desde una DLQ hacia un exchange/routing key destino
+- Auditoría con MongoDB a través de Mongoose
+- Dashboards de métricas: resumen, distribución por cola, actividad, excepciones
+- Endpoint de salud en `/dashboard/health`
+- Swagger UI en `/docs`
+- Soporte para recarga dinámica de configuración con Nacos
 
 ## Requisitos
 
 - Node.js 20+
-- RabbitMQ accesible por AMQP y Management
-- PostgreSQL recomendado para historico real
+- RabbitMQ accesible por AMQP y Management API
+- MongoDB accesible para persistencia de auditoría
+- Opcional: Nacos si se usa recarga dinámica de configuración
 
-## Instalacion
+## Instalación y arranque
 
 ```bash
 npm install
@@ -25,23 +27,26 @@ cp .env.example .env
 npm run start:dev
 ```
 
-Si no configuras `DATABASE_URL`, el backend usa `sqljs` persistido en archivo para no bloquear el arranque local.
+El proyecto usa `MONGODB_URI` para conectar con MongoDB. Si no se define, usa `mongodb://localhost:27017/dlq-console`.
 
-## Variables importantes
+## Variables de entorno importantes
 
 ```env
-PORT=3001
-RABBITMQ_URL=amqp://admin:admin@localhost:5672
+PORT=3000
+CORS_ORIGIN=*
+LOG_LEVEL=debug
+RABBITMQ_AMQ=amqp://admin:admin@localhost:5672
 RABBITMQ_MANAGEMENT_URL=http://localhost:15672
-DATABASE_URL=postgres://postgres:postgres@localhost:5432/dlq_console
-DLQ_COLLECTOR_INTERVAL_MS=30000
-DLQ_COLLECTOR_INSPECT_LIMIT=5
+RABBITMQ_PREFETCH=10
+RABBITMQ_DEFAULT_DLQ=
+RABBITMQ_DEFAULT_REQUEUE_EXCHANGE=
+RABBITMQ_DEFAULT_REQUEUE_ROUTING_KEY=
+MONGODB_URI=mongodb://localhost:27017/dlq-console
 ```
 
 ## Endpoints principales
 
 ```http
-GET /health
 GET /docs
 
 GET /rabbit/config
@@ -50,35 +55,33 @@ GET /rabbit/queues/:queue
 GET /rabbit/queues/:queue/messages?limit=10
 POST /rabbit/queues/:queue/requeue
 
-GET /dashboard/summary?window=24h
-GET /dashboard/queues?window=24h
-GET /dashboard/exceptions?window=24h
-GET /dashboard/activity?window=24h&limit=12
-GET /dashboard/export?window=24h&format=csv
-
 POST /requeue/jobs
 GET /requeue/jobs/:id
+
+GET /dashboard/summary?window=24h
+GET /dashboard/queues?window=24h
+GET /dashboard/activity?window=24h&limit=20
+GET /dashboard/exceptions?window=24h
+GET /dashboard/health
+
+POST /nacos/reload
+GET /nacos/status
 ```
 
-## Requeue auditado
+## Notas útiles
 
-`POST /requeue/jobs` crea un job persistido, ejecuta el requeue y guarda:
+- La API de Swagger se expone en `/docs`
+- El endpoint `/dashboard/health` valida el estado de la base de datos y reporta dependencias
+- El requeue de mensajes DLQ se puede ejecutar desde `/rabbit/queues/:queue/requeue` o `POST /requeue/jobs`
+- Al inspeccionar mensajes RabbitMQ desde DLQ, la lógica puede usar `basic.get` y `nack(requeue=true)` para devolver el mensaje a la cola
 
-- cola origen
-- destino inferido o manual
-- cantidad solicitada y real
-- duracion
-- items reencolados
-
-Los headers de DLQ como `x-death` y `x-first/last-death-*` se limpian antes de republicar.
-
-## Nota importante
-
-RabbitMQ via AMQP no tiene un "peek" real de mensajes. Para inspeccionar, la API hace `basic.get`, transforma el mensaje y luego `nack` con `requeue=true`, por lo que el mensaje vuelve a la cola y puede cambiar de posicion relativa.
-
-## Tests
+## Comandos de desarrollo
 
 ```bash
-npm test -- --runInBand
+npm run start:dev
 npm run build
+npm run lint
+npm run test
+npm run test:watch
+npm run test:cov
 ```
